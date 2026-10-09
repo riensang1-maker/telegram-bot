@@ -11,6 +11,7 @@ create table if not exists orders (id integer primary key, user_id integer,
 create table if not exists items (id integer primary key, product text,
     data text, order_id integer);
 create table if not exists users (id integer primary key);
+create table if not exists photos (product text primary key, file_id text);
 """)
 
 
@@ -67,3 +68,13 @@ def add_user(uid):
 
 def all_users():
     return [r[0] for r in db.execute("select id from users")]
+
+
+def set_photo(pid, file_id):
+    db.execute("insert or replace into photos (product, file_id) values (?,?)", (pid, file_id))
+    db.commit()
+
+
+def get_photo(pid):
+    row = db.execute("select file_id from photos where product=?", (pid,)).fetchone()
+    return row[0] if row else None

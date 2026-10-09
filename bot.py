@@ -14,8 +14,8 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
                            InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
                            Message, ReplyKeyboardMarkup)
 
-from store import (add_items, add_user, all_users, get_order, move, new_order,
-                   stock, take_item, user_orders)
+from store import (add_items, add_user, all_users, get_order, get_photo, move,
+                   new_order, set_photo, stock, take_item, user_orders)
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
@@ -48,6 +48,7 @@ class St(StatesGroup):
 class Adm(StatesGroup):
     add = State()
     bc = State()
+    photo = State()
 
 
 def kb(*rows):
@@ -208,7 +209,7 @@ async def product(c: CallbackQuery, state: FSMContext):
             rows.append([Btn(text="₿ CryptoBot", callback_data=f"cr:{p['id']}")])
         rows.append([Btn(text="💳 Перевод на карту", callback_data=f"card:{p['id']}")])
     rows.append([Btn(text="↩️ Назад", callback_data="back")])
-    await show(c.from_user.id, "\n".join(lines), kb(*rows), p.get("photo"))
+    await show(c.from_user.id, "\n".join(lines), kb(*rows), get_photo(p["id"]) or p.get("photo"))
     await c.answer()
 
 
@@ -316,6 +317,7 @@ async def check_crypto(c: CallbackQuery):
 def admin_kb():
     return kb([Btn(text="📦 Остатки", callback_data="adm:stock")],
               [Btn(text="➕ Пополнить", callback_data="adm:add")],
+              [Btn(text="🖼 Фото товара", callback_data="adm:ph")],
               [Btn(text="📢 Рассылка", callback_data="adm:bc")])
 
 
@@ -368,6 +370,32 @@ async def adm_save(m: Message, state: FSMContext):
     n = add_items(pid, m.text.splitlines())
     await state.clear()
     await show(m.from_user.id, f"✅ Добавлено: {n}\n📦 Теперь в наличии: {stock(pid)}", admin_kb())
+
+
+@dp.callback_query(ADM, F.data == "adm:ph")
+async def adm_ph(c: CallbackQuery):
+    rows = [[Btn(text=title(p), callback_data=f"adm:ph:{i}")] for i, p in PRODUCTS.items()]
+    await show(c.from_user.id, "🖼 Для какого товара фото?", kb(*rows, ADM_BACK))
+    await c.answer()
+
+
+@dp.callback_query(ADM, F.data.startswith("adm:ph:"))
+async def adm_ph_pick(c: CallbackQuery, state: FSMContext):
+    pid = c.data[7:]
+    if pid not in PRODUCTS:
+        return await c.answer("Товар не найден", show_alert=True)
+    await state.set_state(Adm.photo)
+    await state.update_data(pid=pid)
+    await show(c.from_user.id, f"🖼 {title(PRODUCTS[pid])}\n\nПришлите одно фото (не файлом), "
+                               "оно заменит прежнее.\nОтмена: /admin")
+    await c.answer()
+
+
+@dp.message(Adm.photo, F.photo)
+async def adm_ph_save(m: Message, state: FSMContext):
+    set_photo((await state.get_data())["pid"], m.photo[-1].file_id)
+    await state.clear()
+    await show(m.from_user.id, "✅ Фото сохранено", admin_kb())
 
 
 @dp.callback_query(ADM, F.data == "adm:bc")

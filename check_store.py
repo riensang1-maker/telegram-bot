@@ -17,4 +17,6 @@ o4 = s.new_order(4, "g", "card", "review")
 assert s.take_item("g", o4) is None  # закончились
 s.add_user(7); s.add_user(7)
 assert s.all_users() == [7]
+s.set_photo("g", "f1"); s.set_photo("g", "f2")
+assert s.get_photo("g") == "f2" and s.get_photo("x") is None
 print("store OK")
