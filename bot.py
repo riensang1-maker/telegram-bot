@@ -209,44 +209,31 @@ async def product(c: CallbackQuery, state: FSMContext):
     if not p or is_hidden(pid):
         return await c.answer("Товар не найден", show_alert=True)
     n = stock(pid)
-    lines = [f"📁 Выбран товар - {p['name']}", ""]
+    lines = [f"📁 Выбран товар — {p['name']}", ""]
     if p.get("description"):
         lines += [f"ℹ️ {p['description']}", ""]
-    lines.append(f"📦 Товара в наличии - {n}")
+    lines.append(f"📦 Товара в наличии — {n}")
     rub, kzt = price(pid, "RUB"), price(pid, "KZT")
-    lines.append(f"💰 RUB: {money(rub, 'RUB') if rub else 'не задана'}")
-    lines.append(f"💰 KZT: {money(kzt, 'KZT') if kzt else 'не задана'}")
+    lines.append(f"💰 Цена: {money(rub, 'RUB') if rub else 'не задана'}")
+    lines.append(f"💰 Цена: {money(kzt, 'KZT') if kzt else 'не задана'}")
     rows = []
     if n == 0:
         lines += ["", "❌ Нет в наличии"]
     elif not rub and not kzt:
         lines += ["", "⏳ Покупка пока недоступна"]
     else:
-        lines += ["", "Выберите валюту оплаты:"]
+        lines += ["", "Выберите способ оплаты:"]
         for cur, amt in (("RUB", rub), ("KZT", kzt)):
-            if amt:
-                rows.append([Btn(text=f"💳 {money(amt, cur)}", callback_data=f"currency:{pid}:{cur}")])
+            if not amt:
+                continue
+            if CRYPTO_TOKEN:
+                rows.append([Btn(text=f"₿ CryptoBot — {money(amt, cur)}",
+                                 callback_data=f"cr:{pid}:{cur}")])
+            rows.append([Btn(text=f"💳 Перевод на карту — {money(amt, cur)}",
+                             callback_data=f"card:{pid}:{cur}")])
     rows.append([Btn(text="↩️ Назад", callback_data="back")])
-    await show(c.from_user.id, "\\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
-    await c.answer()
-
-
-@dp.callback_query(F.data.startswith("currency:"))
-async def choose_currency(c: CallbackQuery):
-    try:
-        _, pid, cur = c.data.split(":")
-    except ValueError:
-        return await c.answer("Ошибка выбора валюты", show_alert=True)
-    p = sellable(pid, cur)
-    if not p or not stock(pid) or is_hidden(pid):
-        return await c.answer("Товар недоступен", show_alert=True)
-    amt = price(pid, cur)
-    rows = []
-    if CRYPTO_TOKEN:
-        rows.append([Btn(text="₿ CryptoBot", callback_data=f"cr:{pid}:{cur}")])
-    rows.append([Btn(text="💳 Перевод на карту", callback_data=f"card:{pid}:{cur}")])
-    rows.append([Btn(text="↩️ Назад", callback_data=f"p:{pid}")])
-    await show(c.from_user.id, f"📁 {p['name']}\\n💰 К оплате: {money(amt, cur)}\\n\\nВыберите способ оплаты:", kb(*rows))
+    await show(c.from_user.id, "\n".join(lines), kb(*rows),
+               get_photo(pid) or p.get("photo"))
     await c.answer()
 
 
@@ -264,7 +251,7 @@ async def pay_card(c: CallbackQuery, state: FSMContext):
     await state.update_data(oid=oid)
     card_info = CARD_INFO_RUB if cur == "RUB" else CARD_INFO_KZT
     await show(c.from_user.id,
-               f"🧾 Заказ #{oid}\\n📁 {p['name']}\\n💰 К оплате: {money(amt, cur)}\\n\\n{card_info}\\n\\n"
+               f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {money(amt, cur)}\n\n{card_info}\n\n"
                "📸 После перевода отправьте сюда скриншот оплаты.",
                kb([Btn(text="↩️ Назад", callback_data=f"p:{pid}")]))
     await c.answer()
@@ -331,8 +318,8 @@ async def pay_crypto(c: CallbackQuery):
     oid = new_order(c.from_user.id, pid, "crypto", "wait_crypto", inv["invoice_id"], cur, amt)
     url = inv.get("bot_invoice_url") or inv.get("pay_url")
     await show(c.from_user.id,
-               f"🧾 Заказ #{oid}\\n📁 {p['name']}\\n💰 К оплате: {money(amt, cur)}\\n\\n"
-               f"🔗 Счёт: {url}\\n\\nПосле оплаты нажмите «Проверить».",
+               f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {money(amt, cur)}\n\n"
+               f"🔗 Счёт: {url}\n\nПосле оплаты нажмите «Проверить».",
                kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}")],
                   [Btn(text="↩️ Назад", callback_data=f"p:{pid}")]))
     await c.answer()
@@ -407,7 +394,7 @@ async def adm_price_pick(c: CallbackQuery, state: FSMContext):
     if pid not in PRODUCTS:
         return await c.answer("Товар не найден", show_alert=True)
     await state.update_data(pid=pid)
-    await show(c.from_user.id, f"💰 {title(PRODUCTS[pid])}\\nВыберите валюту:",
+    await show(c.from_user.id, f"💰 {title(PRODUCTS[pid])}\nВыберите валюту:",
                kb([Btn(text="RUB ₽", callback_data="adm:pricecur:RUB"),
                    Btn(text="KZT ₸", callback_data="adm:pricecur:KZT")], ADM_BACK))
     await c.answer()
@@ -420,7 +407,7 @@ async def adm_price_currency(c: CallbackQuery, state: FSMContext):
         return await c.answer("Валюта не поддерживается", show_alert=True)
     await state.update_data(currency=cur)
     await state.set_state(Adm.price)
-    await show(c.from_user.id, f"Пришлите новую цену в {cur} (только число, больше нуля).\\nОтмена: /admin")
+    await show(c.from_user.id, f"Пришлите новую цену в {cur} (только число, больше нуля).\nОтмена: /admin")
     await c.answer()
 
 
