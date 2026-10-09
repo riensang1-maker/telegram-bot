@@ -63,12 +63,15 @@ def title(p):
 
 
 KZT_DEFAULTS = {"aqreh1": 1300, "aqreh7": 5000, "aqreh30": 10500, "google": 200}
+USDT_DEFAULTS = {"aqreh1": 2.5, "aqreh7": 9.5, "aqreh30": 20, "google": 0.4}  # меняются в /admin -> Изменить цены
 
 def price(pid, currency):
     if currency == "RUB":
         default = PRODUCTS.get(pid, {}).get("price")
     elif currency == "KZT":
         default = KZT_DEFAULTS.get(pid)
+    elif currency == "USDT":
+        default = USDT_DEFAULTS.get(pid)
     else:
         default = None
     return get_price(pid, currency, default)
@@ -225,13 +228,13 @@ async def product(c: CallbackQuery, state: FSMContext):
     else:
         lines += ["", "Выберите способ оплаты:"]
         if CRYPTO_TOKEN and usdt:
-            rows.append([Btn(text=f"₿ CryptoBot — {money(usdt, 'USDT')}", callback_data=f"cr:{pid}:USDT")])
+            rows.append([Btn(text=f"₿ CryptoBot (АВТОВЫДАЧА) — {money(usdt, 'USDT')}", callback_data=f"cr:{pid}:USDT")])
         if rub:
             rows.append([Btn(text=f"🇷🇺 Оплата в рублях — {money(rub, 'RUB')}", callback_data=f"card:{pid}:RUB")])
         if kzt:
             rows.append([Btn(text=f"🇰🇿 Оплата в тенге — {money(kzt, 'KZT')}", callback_data=f"card:{pid}:KZT")])
     rows.append([Btn(text="↩️ Назад", callback_data="back")])
-    await show(c.from_user.id, "\\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
+    await show(c.from_user.id, "\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
     await c.answer()
 
 
@@ -315,8 +318,8 @@ async def pay_crypto(c: CallbackQuery):
     oid = new_order(c.from_user.id, pid, "crypto", "wait_crypto", inv["invoice_id"], cur, amt)
     url = inv.get("bot_invoice_url") or inv.get("pay_url")
     await show(c.from_user.id,
-               f"🧾 Заказ #{oid}\\n📁 {p['name']}\\n💰 К оплате: {money(amt, 'USDT')}\\n\\n"
-               f"🔗 Счёт: {url}\\n\\nПосле оплаты нажмите «Проверить».",
+               f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {money(amt, 'USDT')}\n\n"
+               f"🔗 Счёт: {url}\n\nПосле оплаты нажмите «Проверить».",
                kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}")],
                   [Btn(text="↩️ Назад", callback_data=f"p:{pid}")]))
     await c.answer()
@@ -442,7 +445,7 @@ async def adm_delpick(c: CallbackQuery):
     rows = [[Btn(text=f"#{item_id} — {data[:28]}", callback_data=f"adm:delconfirm:{pid}:{item_id}")]
             for item_id, data in items[:40]]
     rows.append(ADM_BACK)
-    await show(c.from_user.id, f"🗑 {title(PRODUCTS[pid])}\\nВыберите запись для удаления (показаны первые 40):", kb(*rows))
+    await show(c.from_user.id, f"🗑 {title(PRODUCTS[pid])}\nВыберите запись для удаления (показаны первые 40):", kb(*rows))
     await c.answer()
 
 
@@ -450,7 +453,7 @@ async def adm_delpick(c: CallbackQuery):
 async def adm_delconfirm(c: CallbackQuery):
     _, _, pid, item_id = c.data.split(":")
     item_id = int(item_id)
-    await show(c.from_user.id, f"⚠️ Удалить запись #{item_id} из товара «{PRODUCTS[pid]['name']}»?\\nЭто действие нельзя отменить.",
+    await show(c.from_user.id, f"⚠️ Удалить запись #{item_id} из товара «{PRODUCTS[pid]['name']}»?\nЭто действие нельзя отменить.",
                kb([Btn(text="🗑 Да, удалить", callback_data=f"adm:deldo:{pid}:{item_id}")],
                   [Btn(text="❌ Отмена", callback_data=f"adm:delpick:{pid}")]))
     await c.answer()
