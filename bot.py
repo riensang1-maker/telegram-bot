@@ -554,6 +554,32 @@ async def adm_price_save(m: Message, state: FSMContext):
     await show(m.from_user.id, f"✅ Цена сохранена: {title(PRODUCTS[data['pid']])} — {money(amount, data['currency'])}", admin_kb())
 
 
+@dp.callback_query(ADM, F.data == "adm:add")
+async def adm_add(c: CallbackQuery):
+    rows = [[Btn(text=f"{title(p)} ({stock(i)})", callback_data=f"adm:addpick:{i}")] for i, p in PRODUCTS.items()]
+    await show(c.from_user.id, "➕ Какой товар пополнить?", kb(*rows, ADM_BACK))
+    await c.answer()
+
+
+@dp.callback_query(ADM, F.data.startswith("adm:addpick:"))
+async def adm_add_pick(c: CallbackQuery, state: FSMContext):
+    pid = c.data[len("adm:addpick:"):]
+    if pid not in PRODUCTS:
+        return await c.answer("Товар не найден", show_alert=True)
+    await state.set_state(Adm.add)
+    await state.update_data(pid=pid)
+    await show(c.from_user.id, f"➕ {title(PRODUCTS[pid])}\n\nПришлите ключи/аккаунты, один на строку.\nОтмена: /admin")
+    await c.answer()
+
+
+@dp.message(Adm.add, F.text)
+async def adm_add_save(m: Message, state: FSMContext):
+    pid = (await state.get_data())["pid"]
+    n = add_items(pid, m.text.splitlines())
+    await state.clear()
+    await show(m.from_user.id, f"✅ Добавлено: {n} шт.\n{title(PRODUCTS[pid])}: теперь {stock(pid)} шт.", admin_kb())
+
+
 @dp.callback_query(ADM, F.data == "adm:delitem")
 async def adm_delitem(c: CallbackQuery):
     rows = [[Btn(text=title(p), callback_data=f"adm:delpick:{pid}")] for pid, p in PRODUCTS.items()]
