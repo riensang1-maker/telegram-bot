@@ -1,18 +1,21 @@
 import asyncio
+import html
 import json
 import logging
 import os
 import re
-import sqlite3
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
                            InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
                            Message, ReplyKeyboardMarkup)
+
+from store import (add_items, add_user, all_users, get_order, move, new_order,
+                   stock, take_item, user_orders)
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
@@ -22,23 +25,19 @@ CRYPTO_TOKEN = os.environ.get("CRYPTO_PAY_TOKEN")  # пусто = кнопки C
 CRYPTO_API = os.environ.get("CRYPTO_API_URL", "https://pay.crypt.bot/api")
 
 CATALOG, CABINET, SUPPORT = "🛒 Каталог", "👤 Мой кабинет", "🛠 Поддержка"
-STATUS = {"wait_crypto": "ждёт оплаты", "review": "на проверке",
-          "paid": "оплачен", "rejected": "отклонён"}
+STATUS = {"wait_crypto": "⏳ ждёт оплаты", "review": "🔎 на проверке",
+          "paid": "✅ оплачен", "rejected": "❌ отклонён"}
 
 with open("catalog.json", encoding="utf-8") as f:
     PRODUCTS = {p["id"]: p for p in json.load(f)}
 
-# shortcut: база лежит файлом рядом с ботом; без постоянного диска на хостинге
-# история заказов пропадёт при редеплое, тогда подключить volume
-db = sqlite3.connect("shop.db")
-db.execute("create table if not exists orders (id integer primary key, "
-           "user_id integer, product text, method text, status text, invoice integer)")
-
 bot = Bot(TOKEN)
 dp = Dispatcher()
+ADM = F.from_user.id == ADMIN_ID
 MENU = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=CATALOG), KeyboardButton(text=CABINET)],
               [KeyboardButton(text=SUPPORT)]], resize_keyboard=True)
+last = {}  # id пользователя -> сообщения бота, которые сотрутся при следующем экране
 
 
 class St(StatesGroup):
@@ -46,8 +45,17 @@ class St(StatesGroup):
     support = State()
 
 
+class Adm(StatesGroup):
+    add = State()
+    bc = State()
+
+
 def kb(*rows):
     return InlineKeyboardMarkup(inline_keyboard=[list(r) for r in rows])
+
+
+def title(p):
+    return f"{p.get('emoji', '📁')} {p['name']}"
 
 
 def sellable(pid):
@@ -55,37 +63,58 @@ def sellable(pid):
     return p if p and p.get("price") else None
 
 
-def new_order(uid, pid, method, status, invoice=None):
-    cur = db.execute("insert into orders (user_id, product, method, status, invoice) "
-                     "values (?,?,?,?,?)", (uid, pid, method, status, invoice))
-    db.commit()
-    return cur.lastrowid
+async def clean(uid):
+    for mid in last.pop(uid, []):
+        try:
+            await bot.delete_message(uid, mid)
+        except Exception:
+            pass  # уже удалено или старше 48 часов
 
 
-def get_order(oid):
-    return db.execute("select id, user_id, product, method, status, invoice "
-                      "from orders where id=?", (oid,)).fetchone()
-
-
-def move(oid, old, new):
-    """Меняет статус только если он сейчас old. True = мы первые, выдача один раз."""
-    cur = db.execute("update orders set status=? where id=? and status=?", (new, oid, old))
-    db.commit()
-    return cur.rowcount == 1
-
-
-def delivery(pid, oid):
-    text = PRODUCTS[pid].get("delivery") or "Администратор скоро отправит вам товар."
-    return f"Заказ #{oid} оплачен ✅\n\n{text}"
-
-
-async def tell(uid, text):
+async def show(uid, text, markup=None, photos=None):
+    """Один экран: прошлые сообщения бота стираются, новые запоминаются."""
+    await clean(uid)
+    photos = [photos] if isinstance(photos, str) else list(photos or [])
+    ids, msg = [], None
     try:
-        await bot.send_message(uid, text)
+        if len(photos) > 1:  # у альбома не бывает кнопок, поэтому текст идёт отдельно
+            ids = [x.message_id for x in await bot.send_media_group(
+                uid, [InputMediaPhoto(media=x) for x in photos])]
+        elif photos:
+            msg = await bot.send_photo(uid, photos[0], caption=text, reply_markup=markup)
+    except Exception:
+        logging.exception("фото не отправилось (часто это file_id от другого бота)")
+    if msg is None:
+        msg = await bot.send_message(uid, text, reply_markup=markup)
+    last[uid] = ids + [msg.message_id]
+
+
+async def rm(m: Message):
+    try:
+        await m.delete()
+    except Exception:
+        pass
+
+
+async def tell(uid, text, code=False):
+    try:
+        await bot.send_message(uid, text, parse_mode="HTML" if code else None)
         return True
     except Exception:
         logging.exception("не доставлено пользователю %s", uid)
         return False
+
+
+async def deliver(o):
+    """Выдаёт оплаченный заказ o: берёт товар со склада. True = сообщение дошло."""
+    item = take_item(o[2], o[0])
+    if item:
+        return await tell(o[1], f"✅ Заказ #{o[0]} оплачен!\n\n📦 Ваш товар:\n"
+                                f"<code>{html.escape(item)}</code>", code=True)
+    await bot.send_message(ADMIN_ID, f"⚠️ Заказ #{o[0]} оплачен, а товара «{PRODUCTS[o[2]]['name']}» "
+                                     f"на складе нет! Свяжитесь с клиентом, ID: {o[1]}")
+    return await tell(o[1], f"✅ Заказ #{o[0]} оплачен, но товар закончился. "
+                            "Администратор скоро свяжется с вами.")
 
 
 async def crypto(method, **params):
@@ -101,34 +130,49 @@ async def crypto(method, **params):
 
 # ---------- меню ----------
 
+async def catalog_screen(uid):
+    rows = [[Btn(text=title(p), callback_data=f"p:{i}")] for i, p in PRODUCTS.items()]
+    await show(uid, "🛒 Каталог товаров\n\nВыберите товар:", kb(*rows))
+
+
 @dp.message(CommandStart())
 async def start(m: Message, state: FSMContext):
     await state.clear()
-    await m.answer("Добро пожаловать! Выберите раздел кнопками внизу 👇", reply_markup=MENU)
+    add_user(m.from_user.id)
+    await rm(m)
+    await show(m.from_user.id, "👋 Добро пожаловать!\n\nВыберите раздел кнопками внизу ⬇", MENU)
 
 
 @dp.message(F.text == CATALOG)
 async def catalog(m: Message, state: FSMContext):
     await state.clear()
-    rows = [[Btn(text=p["name"], callback_data=f"p:{i}")] for i, p in PRODUCTS.items()]
-    await m.answer("Выберите товар:", reply_markup=kb(*rows))
+    await rm(m)
+    await catalog_screen(m.from_user.id)
+
+
+@dp.callback_query(F.data == "back")
+async def back(c: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await catalog_screen(c.from_user.id)
+    await c.answer()
 
 
 @dp.message(F.text == CABINET)
 async def cabinet(m: Message, state: FSMContext):
     await state.clear()
-    rows = db.execute("select id, product, status from orders where user_id=? "
-                      "and status!='wait_proof' order by id desc limit 5",
-                      (m.from_user.id,)).fetchall()
+    await rm(m)
     hist = "\n".join(f"#{i} {PRODUCTS.get(p, {}).get('name', p)} — {STATUS.get(s, s)}"
-                     for i, p, s in rows) or "пока пусто"
-    await m.answer(f"👤 {m.from_user.full_name}\nID: {m.from_user.id}\n\nПоследние заказы:\n{hist}")
+                     for i, p, s in user_orders(m.from_user.id)) or "пока пусто"
+    await show(m.from_user.id, f"👤 Мой кабинет\n\n🙍 Имя: {m.from_user.full_name}\n"
+                               f"🆔 ID: {m.from_user.id}\n\n🧾 Последние заказы:\n{hist}")
 
 
 @dp.message(F.text == SUPPORT)
 async def support(m: Message, state: FSMContext):
     await state.set_state(St.support)
-    await m.answer("Опишите вопрос одним сообщением, я передам его администратору.")
+    await rm(m)
+    await show(m.from_user.id, "🛠 Поддержка\n\nОпишите вопрос одним сообщением, "
+                               "я передам его администратору.")
 
 
 @dp.message(St.support, F.text)
@@ -136,63 +180,50 @@ async def support_send(m: Message, state: FSMContext):
     await bot.send_message(ADMIN_ID, f"🛠 Обращение\nID: {m.from_user.id}\n"
                                      f"{m.from_user.full_name}\n\n{m.text}")
     await state.clear()
-    await m.answer("Отправлено. Ответ придёт сюда, в бот.")
+    await show(m.from_user.id, "✅ Отправлено. Ответ придёт сюда, в бот.")
 
 
-@dp.message(F.from_user.id == ADMIN_ID, F.reply_to_message, F.text)
-async def admin_reply(m: Message):
-    """Админ отвечает реплаем на обращение или чек: ответ уходит пользователю с ID из сообщения."""
-    src = m.reply_to_message.text or m.reply_to_message.caption or ""
-    found = re.search(r"ID: (\d+)", src)
-    if found and not await tell(int(found[1]), f"Ответ поддержки:\n\n{m.text}"):
-        await m.answer("Не доставлено (пользователь заблокировал бота?)")
-
-
-# ---------- каталог и покупка ----------
+# ---------- товар и оплата ----------
 
 @dp.callback_query(F.data.startswith("p:"))
-async def product(c: CallbackQuery):
+async def product(c: CallbackQuery, state: FSMContext):
+    await state.clear()
     p = PRODUCTS.get(c.data[2:])
     if not p:
         return await c.answer("Товар не найден", show_alert=True)
-    price = f"{p['price']} ₽" if p.get("price") else "уточняется, покупка пока недоступна"
-    text = f"{p['name']}\n\n{p['description']}\n\nЦена: {price}"
-    markup = kb([Btn(text="🛒 Купить", callback_data=f"b:{p['id']}")]) if p.get("price") else kb()
-    photos = p.get("photo") or []  # строка или список: ссылки или file_id
-    if isinstance(photos, str):
-        photos = [photos]
-    if len(photos) > 1:  # у альбома не бывает кнопок, поэтому текст отдельным сообщением
-        await c.message.answer_media_group([InputMediaPhoto(media=x) for x in photos])
-        await c.message.answer(text, reply_markup=markup)
-    elif photos:
-        await c.message.answer_photo(photos[0], caption=text, reply_markup=markup)
+    n = stock(p["id"])
+    lines = [f"📁 Выбран товар - {p['name']}", ""]
+    if p.get("description"):
+        lines += [f"ℹ️ {p['description']}", ""]
+    lines.append(f"📦 Товара в наличии - {n}")
+    lines.append(f"💰 Цена - {p['price']} ₽" if p.get("price") else "💰 Цена - уточняется")
+    rows = []
+    if not p.get("price"):
+        lines += ["", "⏳ Покупка пока недоступна"]
+    elif n == 0:
+        lines += ["", "❌ Нет в наличии"]
     else:
-        await c.message.answer(text, reply_markup=markup)
-    await c.answer()
-
-
-@dp.callback_query(F.data.startswith("b:"))
-async def buy(c: CallbackQuery):
-    if not sellable(c.data[2:]):
-        return await c.answer("Товар недоступен", show_alert=True)
-    pid = c.data[2:]
-    rows = [[Btn(text="💳 Перевод на карту", callback_data=f"card:{pid}")]]
-    if CRYPTO_TOKEN:
-        rows.append([Btn(text="₿ CryptoBot", callback_data=f"cr:{pid}")])
-    await c.message.answer("Способ оплаты:", reply_markup=kb(*rows))
+        lines += ["", "Для оплаты воспользуйтесь кнопками ниже ⬇"]
+        if CRYPTO_TOKEN:
+            rows.append([Btn(text="₿ CryptoBot", callback_data=f"cr:{p['id']}")])
+        rows.append([Btn(text="💳 Перевод на карту", callback_data=f"card:{p['id']}")])
+    rows.append([Btn(text="↩️ Назад", callback_data="back")])
+    await show(c.from_user.id, "\n".join(lines), kb(*rows), p.get("photo"))
     await c.answer()
 
 
 @dp.callback_query(F.data.startswith("card:"))
 async def pay_card(c: CallbackQuery, state: FSMContext):
     p = sellable(c.data[5:])
-    if not p:
+    if not p or not stock(p["id"]):
         return await c.answer("Товар недоступен", show_alert=True)
     oid = new_order(c.from_user.id, p["id"], "card", "wait_proof")
     await state.set_state(St.proof)
     await state.update_data(oid=oid)
-    await c.message.answer(f"Заказ #{oid}: {p['name']}\nК оплате: {p['price']} ₽\n\n{CARD_INFO}\n\n"
-                           "После перевода отправьте сюда скриншот оплаты.")
+    await show(c.from_user.id,
+               f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {p['price']} ₽\n\n{CARD_INFO}\n\n"
+               "📸 После перевода отправьте сюда скриншот оплаты.",
+               kb([Btn(text="↩️ Назад", callback_data=f"p:{p['id']}")]))
     await c.answer()
 
 
@@ -209,12 +240,12 @@ async def proof(m: Message, state: FSMContext):
         reply_markup=kb([Btn(text="✅ Подтвердить", callback_data=f"ok:{oid}"),
                          Btn(text="❌ Отклонить", callback_data=f"no:{oid}")]))
     await state.clear()
-    await m.answer("Скриншот отправлен, ждите подтверждения.")
+    await show(m.from_user.id, "✅ Скриншот отправлен, ждите подтверждения.")
 
 
 @dp.message(St.proof)
 async def proof_bad(m: Message):
-    await m.answer("Нужен скриншот оплаты (фото). Чтобы выйти, нажмите кнопку меню.")
+    await m.answer("📸 Нужен скриншот оплаты (фото). Чтобы выйти, нажмите кнопку меню.")
 
 
 @dp.callback_query(F.data.regexp(r"^(ok|no):\d+$"))
@@ -227,10 +258,10 @@ async def decide(c: CallbackQuery):
     if not o or not move(oid, "review", "paid" if act == "ok" else "rejected"):
         return await c.answer("Заказ уже обработан", show_alert=True)
     if act == "ok":
-        sent = await tell(o[1], delivery(o[2], oid))
+        sent = await deliver(o)
         mark = "✅ Подтверждён"
     else:
-        sent = await tell(o[1], f"Оплата по заказу #{oid} не подтверждена. Напишите в поддержку.")
+        sent = await tell(o[1], f"❌ Оплата по заказу #{oid} не подтверждена. Напишите в поддержку.")
         mark = "❌ Отклонён"
     if not sent:
         mark += " (пользователю НЕ доставлено!)"
@@ -241,7 +272,7 @@ async def decide(c: CallbackQuery):
 @dp.callback_query(F.data.startswith("cr:"))
 async def pay_crypto(c: CallbackQuery):
     p = sellable(c.data[3:])
-    if not p or not CRYPTO_TOKEN:
+    if not p or not CRYPTO_TOKEN or not stock(p["id"]):
         return await c.answer("Оплата недоступна", show_alert=True)
     try:
         inv = await crypto("createInvoice", currency_type="fiat", fiat="RUB",
@@ -251,9 +282,11 @@ async def pay_crypto(c: CallbackQuery):
         return await c.answer("Не удалось создать счёт, попробуйте позже", show_alert=True)
     oid = new_order(c.from_user.id, p["id"], "crypto", "wait_crypto", inv["invoice_id"])
     url = inv.get("bot_invoice_url") or inv.get("pay_url")
-    await c.message.answer(f"Заказ #{oid}: {p['name']}\nК оплате: {p['price']} ₽\n\nСчёт: {url}\n\n"
-                           "После оплаты нажмите «Проверить».",
-                           reply_markup=kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}")]))
+    await show(c.from_user.id,
+               f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {p['price']} ₽\n\n"
+               f"🔗 Счёт: {url}\n\nПосле оплаты нажмите «Проверить».",
+               kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}")],
+                  [Btn(text="↩️ Назад", callback_data=f"p:{p['id']}")]))
     await c.answer()
 
 
@@ -271,13 +304,117 @@ async def check_crypto(c: CallbackQuery):
         return await c.answer("Не удалось проверить, попробуйте ещё раз", show_alert=True)
     items = res["items"] if isinstance(res, dict) else res
     if items and items[0]["status"] == "paid" and move(o[0], "wait_crypto", "paid"):
-        await c.message.answer(delivery(o[2], o[0]))
+        await clean(c.from_user.id)  # убираем экран со счётом, товар отправляется отдельным сообщением
+        await deliver(o)
         await c.answer()
     else:
         await c.answer("Оплата пока не найдена", show_alert=True)
 
 
-@dp.message(F.from_user.id == ADMIN_ID, F.photo)
+# ---------- админ ----------
+
+def admin_kb():
+    return kb([Btn(text="📦 Остатки", callback_data="adm:stock")],
+              [Btn(text="➕ Пополнить", callback_data="adm:add")],
+              [Btn(text="📢 Рассылка", callback_data="adm:bc")])
+
+
+ADM_BACK = [Btn(text="↩️ Назад", callback_data="adm:menu")]
+
+
+@dp.message(Command("admin"), ADM)
+async def admin(m: Message, state: FSMContext):
+    await state.clear()
+    await rm(m)
+    await show(m.from_user.id, "🛠 Админ-панель", admin_kb())
+
+
+@dp.callback_query(ADM, F.data == "adm:menu")
+async def adm_menu(c: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show(c.from_user.id, "🛠 Админ-панель", admin_kb())
+    await c.answer()
+
+
+@dp.callback_query(ADM, F.data == "adm:stock")
+async def adm_stock(c: CallbackQuery):
+    lines = [f"{title(p)}: {stock(i)} шт." for i, p in PRODUCTS.items()]
+    await show(c.from_user.id, "📦 Остатки\n\n" + "\n".join(lines), kb(ADM_BACK))
+    await c.answer()
+
+
+@dp.callback_query(ADM, F.data == "adm:add")
+async def adm_add(c: CallbackQuery):
+    rows = [[Btn(text=title(p), callback_data=f"adm:p:{i}")] for i, p in PRODUCTS.items()]
+    await show(c.from_user.id, "➕ Для какого товара пополнить?", kb(*rows, ADM_BACK))
+    await c.answer()
+
+
+@dp.callback_query(ADM, F.data.startswith("adm:p:"))
+async def adm_pick(c: CallbackQuery, state: FSMContext):
+    pid = c.data[6:]
+    if pid not in PRODUCTS:
+        return await c.answer("Товар не найден", show_alert=True)
+    await state.set_state(Adm.add)
+    await state.update_data(pid=pid)
+    await show(c.from_user.id, f"➕ {title(PRODUCTS[pid])}\n\nПришлите товары одним сообщением: "
+                               "каждый с новой строки (ключ, логин:пароль и т.п.).\nОтмена: /admin")
+    await c.answer()
+
+
+@dp.message(Adm.add, F.text)
+async def adm_save(m: Message, state: FSMContext):
+    pid = (await state.get_data())["pid"]
+    n = add_items(pid, m.text.splitlines())
+    await state.clear()
+    await show(m.from_user.id, f"✅ Добавлено: {n}\n📦 Теперь в наличии: {stock(pid)}", admin_kb())
+
+
+@dp.callback_query(ADM, F.data == "adm:bc")
+async def adm_bc(c: CallbackQuery, state: FSMContext):
+    await state.set_state(Adm.bc)
+    await show(c.from_user.id, "📢 Рассылка\n\nПришлите сообщение (текст или фото с подписью), "
+                               "оно уйдёт всем, кто запускал бота.\nОтмена: /admin")
+    await c.answer()
+
+
+@dp.message(Adm.bc)
+async def adm_bc_preview(m: Message, state: FSMContext):
+    await state.update_data(mid=m.message_id)
+    await show(m.from_user.id, f"📢 Разослать это сообщение? Получателей: {len(all_users())}",
+               kb([Btn(text="✅ Отправить", callback_data="bc:yes"),
+                   Btn(text="❌ Отмена", callback_data="adm:menu")]))
+
+
+@dp.callback_query(ADM, F.data == "bc:yes")
+async def bc_send(c: CallbackQuery, state: FSMContext):
+    mid = (await state.get_data()).get("mid")
+    if not mid:
+        return await c.answer("Сначала пришлите сообщение", show_alert=True)
+    await state.clear()
+    await c.answer("Отправляю…")
+    ok = bad = 0
+    # shortcut: без обработки флуд-лимита Telegram, при тысячах подписчиков добавить TelegramRetryAfter
+    for uid in all_users():
+        try:
+            await bot.copy_message(uid, ADMIN_ID, mid)
+            ok += 1
+        except Exception:
+            bad += 1
+        await asyncio.sleep(0.05)
+    await show(ADMIN_ID, f"📢 Рассылка завершена\n✅ Доставлено: {ok}\n⚠️ Не доставлено: {bad}", admin_kb())
+
+
+@dp.message(ADM, F.reply_to_message, F.text)
+async def admin_reply(m: Message):
+    """Админ отвечает реплаем на обращение или чек: ответ уходит пользователю с ID из сообщения."""
+    src = m.reply_to_message.text or m.reply_to_message.caption or ""
+    found = re.search(r"ID: (\d+)", src)
+    if found and not await tell(int(found[1]), f"💬 Ответ поддержки:\n\n{m.text}"):
+        await m.answer("Не доставлено (пользователь заблокировал бота?)")
+
+
+@dp.message(ADM, F.photo)
 async def photo_id(m: Message):
     """Админ шлёт боту скрин, в ответ получает file_id для поля photo в catalog.json."""
     await m.answer(m.photo[-1].file_id)
