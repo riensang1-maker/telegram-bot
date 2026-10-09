@@ -94,3 +94,20 @@ def set_photo(pid, file_id):
 def get_photo(pid):
     row = db.execute("select file_id from photos where product=?", (pid,)).fetchone()
     return row[0] if row else None
+
+
+def list_stock_items(pid):
+    """Свободные ключи/аккаунты, ещё не привязанные к заказу."""
+    return db.execute(
+        "select id, data from items where product=? and order_id is null order by id",
+        (pid,)
+    ).fetchall()
+
+def delete_stock_item(item_id, pid):
+    """Удаляет только свободную запись склада, не трогая уже выданные заказы."""
+    cur = db.execute(
+        "delete from items where id=? and product=? and order_id is null",
+        (item_id, pid)
+    )
+    db.commit()
+    return cur.rowcount == 1

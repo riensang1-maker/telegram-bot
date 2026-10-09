@@ -16,7 +16,7 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
 
 from store import (add_items, add_user, all_users, get_order, get_photo, move,
                    new_order, set_photo, stock, take_item, user_orders,
-                   get_price, set_price, is_hidden, hide_product, unhide_product)
+                   get_price, set_price, is_hidden, hide_product, unhide_product, list_stock_items, delete_stock_item)
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
@@ -67,12 +67,14 @@ KZT_DEFAULTS = {"aqreh1": 1300, "aqreh7": 5000, "aqreh30": 10500, "google": 200}
 def price(pid, currency):
     if currency == "RUB":
         default = PRODUCTS.get(pid, {}).get("price")
-    else:
+    elif currency == "KZT":
         default = KZT_DEFAULTS.get(pid)
+    else:
+        default = None
     return get_price(pid, currency, default)
 
 def money(amount, currency):
-    return f"{amount:g} {'₽' if currency == 'RUB' else '₸'}"
+    return f"{amount:g} {'₽' if currency == 'RUB' else '₸' if currency == 'KZT' else 'USDT'}"
 
 def sellable(pid, currency="RUB"):
     p = PRODUCTS.get(pid)
@@ -213,27 +215,23 @@ async def product(c: CallbackQuery, state: FSMContext):
     if p.get("description"):
         lines += [f"ℹ️ {p['description']}", ""]
     lines.append(f"📦 Товара в наличии — {n}")
-    rub, kzt = price(pid, "RUB"), price(pid, "KZT")
+    rub, kzt, usdt = price(pid, "RUB"), price(pid, "KZT"), price(pid, "USDT")
     lines.append(f"💰 Цена: {money(rub, 'RUB') if rub else 'не задана'}")
-    lines.append(f"💰 Цена: {money(kzt, 'KZT') if kzt else 'не задана'}")
     rows = []
     if n == 0:
         lines += ["", "❌ Нет в наличии"]
-    elif not rub and not kzt:
+    elif not rub and not kzt and not usdt:
         lines += ["", "⏳ Покупка пока недоступна"]
     else:
         lines += ["", "Выберите способ оплаты:"]
-        for cur, amt in (("RUB", rub), ("KZT", kzt)):
-            if not amt:
-                continue
-            if CRYPTO_TOKEN:
-                rows.append([Btn(text=f"₿ CryptoBot — {money(amt, cur)}",
-                                 callback_data=f"cr:{pid}:{cur}")])
-            rows.append([Btn(text=f"💳 Перевод на карту — {money(amt, cur)}",
-                             callback_data=f"card:{pid}:{cur}")])
+        if CRYPTO_TOKEN and usdt:
+            rows.append([Btn(text=f"₿ CryptoBot — {money(usdt, 'USDT')}", callback_data=f"cr:{pid}:USDT")])
+        if rub:
+            rows.append([Btn(text=f"🇷🇺 Оплата в рублях — {money(rub, 'RUB')}", callback_data=f"card:{pid}:RUB")])
+        if kzt:
+            rows.append([Btn(text=f"🇰🇿 Оплата в тенге — {money(kzt, 'KZT')}", callback_data=f"card:{pid}:KZT")])
     rows.append([Btn(text="↩️ Назад", callback_data="back")])
-    await show(c.from_user.id, "\n".join(lines), kb(*rows),
-               get_photo(pid) or p.get("photo"))
+    await show(c.from_user.id, "\\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
     await c.answer()
 
 
@@ -302,15 +300,14 @@ async def decide(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cr:"))
 async def pay_crypto(c: CallbackQuery):
-    parts = c.data.split(":")
-    pid = parts[1]
-    cur = parts[2] if len(parts) > 2 else "RUB"
+    pid = c.data.split(":")[1]
+    cur = "USDT"
     p = sellable(pid, cur)
     amt = price(pid, cur)
     if not p or not amt or not CRYPTO_TOKEN or not stock(pid) or is_hidden(pid):
-        return await c.answer("Оплата недоступна", show_alert=True)
+        return await c.answer("Цена USDT не задана или товар недоступен", show_alert=True)
     try:
-        inv = await crypto("createInvoice", currency_type="fiat", fiat=cur,
+        inv = await crypto("createInvoice", currency_type="crypto", asset="USDT",
                            amount=str(amt), description=p["name"])
     except Exception:
         logging.exception("createInvoice")
@@ -318,8 +315,8 @@ async def pay_crypto(c: CallbackQuery):
     oid = new_order(c.from_user.id, pid, "crypto", "wait_crypto", inv["invoice_id"], cur, amt)
     url = inv.get("bot_invoice_url") or inv.get("pay_url")
     await show(c.from_user.id,
-               f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {money(amt, cur)}\n\n"
-               f"🔗 Счёт: {url}\n\nПосле оплаты нажмите «Проверить».",
+               f"🧾 Заказ #{oid}\\n📁 {p['name']}\\n💰 К оплате: {money(amt, 'USDT')}\\n\\n"
+               f"🔗 Счёт: {url}\\n\\nПосле оплаты нажмите «Проверить».",
                kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}")],
                   [Btn(text="↩️ Назад", callback_data=f"p:{pid}")]))
     await c.answer()
@@ -352,7 +349,7 @@ def admin_kb():
     return kb([Btn(text="📦 Остатки", callback_data="adm:stock")],
               [Btn(text="➕ Пополнить", callback_data="adm:add")],
               [Btn(text="💰 Изменить цены", callback_data="adm:price")],
-              [Btn(text="🗑 Скрыть товар", callback_data="adm:hide")],
+              [Btn(text="🗑 Удалить ключ/аккаунт", callback_data="adm:delitem")],
               [Btn(text="🖼 Фото товара", callback_data="adm:ph")],
               [Btn(text="📢 Рассылка", callback_data="adm:bc")])
 
@@ -396,14 +393,15 @@ async def adm_price_pick(c: CallbackQuery, state: FSMContext):
     await state.update_data(pid=pid)
     await show(c.from_user.id, f"💰 {title(PRODUCTS[pid])}\nВыберите валюту:",
                kb([Btn(text="RUB ₽", callback_data="adm:pricecur:RUB"),
-                   Btn(text="KZT ₸", callback_data="adm:pricecur:KZT")], ADM_BACK))
+                   Btn(text="KZT ₸", callback_data="adm:pricecur:KZT"),
+                    Btn(text="USDT", callback_data="adm:pricecur:USDT")], ADM_BACK))
     await c.answer()
 
 
 @dp.callback_query(ADM, F.data.startswith("adm:pricecur:"))
 async def adm_price_currency(c: CallbackQuery, state: FSMContext):
     cur = c.data.rsplit(":", 1)[1]
-    if cur not in ("RUB", "KZT"):
+    if cur not in ("RUB", "KZT", "USDT"):
         return await c.answer("Валюта не поддерживается", show_alert=True)
     await state.update_data(currency=cur)
     await state.set_state(Adm.price)
@@ -426,65 +424,44 @@ async def adm_price_save(m: Message, state: FSMContext):
     await show(m.from_user.id, f"✅ Цена сохранена: {title(PRODUCTS[data['pid']])} — {money(amount, data['currency'])}", admin_kb())
 
 
-@dp.callback_query(ADM, F.data == "adm:hide")
-async def adm_hide(c: CallbackQuery):
-    rows = [[Btn(text=("↩️ Вернуть: " if is_hidden(pid) else "🗑 Скрыть: ") + p["name"],
-                  callback_data=f"adm:hidepick:{pid}")] for pid, p in PRODUCTS.items()]
-    await show(c.from_user.id, "🗑 Выберите товар. Скрытие не удаляет склад и историю заказов:", kb(*rows, ADM_BACK))
+@dp.callback_query(ADM, F.data == "adm:delitem")
+async def adm_delitem(c: CallbackQuery):
+    rows = [[Btn(text=title(p), callback_data=f"adm:delpick:{pid}")] for pid, p in PRODUCTS.items()]
+    await show(c.from_user.id, "🗑 Выберите товар, из которого удалить ключ/аккаунт:", kb(*rows, ADM_BACK))
     await c.answer()
 
 
-@dp.callback_query(ADM, F.data.startswith("adm:hidepick:"))
-async def adm_hide_pick(c: CallbackQuery):
-    pid = c.data[len("adm:hidepick:"):]
+@dp.callback_query(ADM, F.data.startswith("adm:delpick:"))
+async def adm_delpick(c: CallbackQuery):
+    pid = c.data[len("adm:delpick:"):]
     if pid not in PRODUCTS:
         return await c.answer("Товар не найден", show_alert=True)
-    if is_hidden(pid):
-        unhide_product(pid)
-        await show(c.from_user.id, f"✅ Товар снова виден в каталоге: {title(PRODUCTS[pid])}", admin_kb())
-    else:
-        await show(c.from_user.id,
-                   f"⚠️ Скрыть «{PRODUCTS[pid]['name']}» из каталога? Остаток {stock(pid)} шт. и история заказов сохранятся.",
-                   kb([Btn(text="🗑 Да, скрыть", callback_data=f"adm:hideconfirm:{pid}")],
-                      [Btn(text="❌ Отмена", callback_data="adm:hide")]))
+    items = list_stock_items(pid)
+    if not items:
+        return await c.answer("Свободных ключей/аккаунтов нет", show_alert=True)
+    rows = [[Btn(text=f"#{item_id} — {data[:28]}", callback_data=f"adm:delconfirm:{pid}:{item_id}")]
+            for item_id, data in items[:40]]
+    rows.append(ADM_BACK)
+    await show(c.from_user.id, f"🗑 {title(PRODUCTS[pid])}\\nВыберите запись для удаления (показаны первые 40):", kb(*rows))
     await c.answer()
 
 
-@dp.callback_query(ADM, F.data.startswith("adm:hideconfirm:"))
-async def adm_hide_confirm(c: CallbackQuery):
-    pid = c.data[len("adm:hideconfirm:"):]
-    if pid not in PRODUCTS:
-        return await c.answer("Товар не найден", show_alert=True)
-    hide_product(pid)
-    await show(c.from_user.id, f"✅ Товар скрыт. Остаток и история сохранены: {title(PRODUCTS[pid])}", admin_kb())
+@dp.callback_query(ADM, F.data.startswith("adm:delconfirm:"))
+async def adm_delconfirm(c: CallbackQuery):
+    _, _, pid, item_id = c.data.split(":")
+    item_id = int(item_id)
+    await show(c.from_user.id, f"⚠️ Удалить запись #{item_id} из товара «{PRODUCTS[pid]['name']}»?\\nЭто действие нельзя отменить.",
+               kb([Btn(text="🗑 Да, удалить", callback_data=f"adm:deldo:{pid}:{item_id}")],
+                  [Btn(text="❌ Отмена", callback_data=f"adm:delpick:{pid}")]))
     await c.answer()
 
 
-@dp.callback_query(ADM, F.data == "adm:add")
-async def adm_add(c: CallbackQuery):
-    rows = [[Btn(text=title(p), callback_data=f"adm:p:{i}")] for i, p in PRODUCTS.items()]
-    await show(c.from_user.id, "➕ Для какого товара пополнить?", kb(*rows, ADM_BACK))
+@dp.callback_query(ADM, F.data.startswith("adm:deldo:"))
+async def adm_deldo(c: CallbackQuery):
+    _, _, pid, item_id = c.data.split(":")
+    deleted = delete_stock_item(int(item_id), pid)
+    await show(c.from_user.id, "✅ Запись удалена." if deleted else "Запись уже отсутствует.", admin_kb())
     await c.answer()
-
-
-@dp.callback_query(ADM, F.data.startswith("adm:p:"))
-async def adm_pick(c: CallbackQuery, state: FSMContext):
-    pid = c.data[6:]
-    if pid not in PRODUCTS:
-        return await c.answer("Товар не найден", show_alert=True)
-    await state.set_state(Adm.add)
-    await state.update_data(pid=pid)
-    await show(c.from_user.id, f"➕ {title(PRODUCTS[pid])}\n\nПришлите товары одним сообщением: "
-                               "каждый с новой строки (ключ, логин:пароль и т.п.).\nОтмена: /admin")
-    await c.answer()
-
-
-@dp.message(Adm.add, F.text)
-async def adm_save(m: Message, state: FSMContext):
-    pid = (await state.get_data())["pid"]
-    n = add_items(pid, m.text.splitlines())
-    await state.clear()
-    await show(m.from_user.id, f"✅ Добавлено: {n}\n📦 Теперь в наличии: {stock(pid)}", admin_kb())
 
 
 @dp.callback_query(ADM, F.data == "adm:ph")
