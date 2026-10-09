@@ -182,7 +182,8 @@ async def deliver(o):
     item = take_item(o[2], o[0])
     if item:
         sent = await tell(o[1], f"✅ Заказ #{o[0]} оплачен!\n\n📦 Ваш товар:\n"
-                                f"<code>{html.escape(item)}</code>", code=True, markup=await vip_kb())
+                                f"<code>{html.escape(item)}</code>", code=True,
+                          markup=await vip_kb() if PRODUCTS.get(o[2], {}).get("group") == "aqreh" else None)  # VIP только для AQREH
         if sent:
             await tell(o[1], "⭐ Оцените покупку:",
                        markup=kb([Btn(text=f"{n}⭐", callback_data=f"rv:{o[0]}:{n}") for n in range(1, 6)]))
