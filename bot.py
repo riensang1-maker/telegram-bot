@@ -54,8 +54,44 @@ class Adm(StatesGroup):
     price = State()
 
 
+# ID премиум-эмодзи. Ключи: rub, kzt, crypto, back и id товара (aqreh1, google и т.д.).
+# Пока ключ пустой, кнопка показывает обычный эмодзи. ID узнать: админ шлёт боту премиум-эмодзи.
+EMOJI = {
+    # "rub": "5...", "kzt": "5...", "crypto": "5...", "back": "5...",
+    # "aqreh1": "5...", "google": "5...",
+}
+
+
+def ebtn(key, fallback, text, cb):
+    """Кнопка с премиум-эмодзи, если ID задан, иначе с обычным эмодзи."""
+    if EMOJI.get(key):
+        return Btn(text=text, callback_data=cb, icon_custom_emoji_id=EMOJI[key])
+    return Btn(text=f"{fallback} {text}", callback_data=cb)
+
+
 def kb(*rows):
     return InlineKeyboardMarkup(inline_keyboard=[list(r) for r in rows])
+
+
+# Группы: несколько товаров (срок День/Неделя/Месяц) показываются в каталоге одной кнопкой.
+# В catalog.json у таких товаров поля "group" и "term". Склад и цены у каждого срока свои.
+GROUPS = {"aqreh": {"emoji": "🍎", "name": "AQREH iOS",
+                    "info": ["⚙️ Установка строго через сертификат.",
+                             "🔑 Сертификат можно купить через лс @Desertvo",
+                             "⚠️ На слабые iPhone не советуем покупать."]}}
+
+
+def members(gid):
+    return [i for i, p in PRODUCTS.items() if p.get("group") == gid and not is_hidden(i)]
+
+
+def price_line(pid, usdt=True):
+    parts = []
+    for cur in ("RUB", "KZT", "USDT"):
+        a = price(pid, cur)
+        if a and (cur != "USDT" or (usdt and CRYPTO_TOKEN)):
+            parts.append(money(a, cur))
+    return " / ".join(parts) or "цена не задана"
 
 
 def title(p):
@@ -152,7 +188,17 @@ async def crypto(method, **params):
 # ---------- меню ----------
 
 async def catalog_screen(uid):
-    rows = [[Btn(text=title(p), callback_data=f"p:{i}")] for i, p in PRODUCTS.items() if not is_hidden(i)]
+    rows, seen = [], set()
+    for i, p in PRODUCTS.items():
+        if is_hidden(i):
+            continue
+        g = p.get("group")
+        if g in GROUPS:
+            if g not in seen:
+                seen.add(g)
+                rows.append([ebtn(g, GROUPS[g]["emoji"], GROUPS[g]["name"], f"g:{g}")])
+        else:
+            rows.append([ebtn(i, p.get("emoji", "📁"), p["name"], f"p:{i}")])
     await show(uid, "🛒 Каталог товаров\n\nВыберите товар:", kb(*rows))
 
 
@@ -206,6 +252,34 @@ async def support_send(m: Message, state: FSMContext):
 
 # ---------- товар и оплата ----------
 
+@dp.callback_query(F.data.startswith("g:"))
+async def group(c: CallbackQuery, state: FSMContext):
+    await state.clear()
+    gid = c.data[2:]
+    ids = members(gid)
+    if gid not in GROUPS or not ids:
+        return await c.answer("Товар не найден", show_alert=True)
+    g, sep = GROUPS[gid], "──────────────"
+    lines = [f"{g['emoji']} {g['name']}", ""]
+    if g.get("info"):
+        lines += [sep] + g["info"]
+    elif PRODUCTS[ids[0]].get("description"):
+        lines += [PRODUCTS[ids[0]]["description"]]
+    lines += [sep] + [f"• {PRODUCTS[i].get('term', PRODUCTS[i]['name'])} — {price_line(i)}" for i in ids]
+    lines += [sep, "", "👇 Выберите срок:"]
+    rows = [[Btn(text=f"{'✅' if stock(i) else '❌'} {PRODUCTS[i].get('term', PRODUCTS[i]['name'])} — {price_line(i, usdt=False)}",
+                 callback_data=f"p:{i}" if stock(i) else f"oos:{i}")] for i in ids]
+    rows.append([ebtn("back", "↩️", "Назад", "back")])
+    photo = next((get_photo(i) or PRODUCTS[i].get("photo") for i in ids if get_photo(i) or PRODUCTS[i].get("photo")), None)
+    await show(c.from_user.id, "\n".join(lines), kb(*rows), photo)
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("oos:"))
+async def out_of_stock(c: CallbackQuery):
+    await c.answer("Этого срока сейчас нет в наличии", show_alert=True)
+
+
 @dp.callback_query(F.data.startswith("p:"))
 async def product(c: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -228,12 +302,12 @@ async def product(c: CallbackQuery, state: FSMContext):
     else:
         lines += ["", "Выберите способ оплаты:"]
         if CRYPTO_TOKEN and usdt:
-            rows.append([Btn(text=f"₿ CryptoBot (АВТОВЫДАЧА) — {money(usdt, 'USDT')}", callback_data=f"cr:{pid}:USDT")])
+            rows.append([ebtn("crypto", "₿", f"CryptoBot (АВТОВЫДАЧА) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT")])
         if rub:
-            rows.append([Btn(text=f"🇷🇺 Оплата в рублях — {money(rub, 'RUB')}", callback_data=f"card:{pid}:RUB")])
+            rows.append([ebtn("rub", "🇷🇺", f"Оплата в рублях — {money(rub, 'RUB')}", f"card:{pid}:RUB")])
         if kzt:
-            rows.append([Btn(text=f"🇰🇿 Оплата в тенге — {money(kzt, 'KZT')}", callback_data=f"card:{pid}:KZT")])
-    rows.append([Btn(text="↩️ Назад", callback_data="back")])
+            rows.append([ebtn("kzt", "🇰🇿", f"Оплата в тенге — {money(kzt, 'KZT')}", f"card:{pid}:KZT")])
+    rows.append([ebtn("back", "↩️", "Назад", f"g:{p['group']}" if p.get("group") in GROUPS else "back")])
     await show(c.from_user.id, "\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
     await c.answer()
 
@@ -535,6 +609,13 @@ async def admin_reply(m: Message):
     found = re.search(r"ID: (\d+)", src)
     if found and not await tell(int(found[1]), f"💬 Ответ поддержки:\n\n{m.text}"):
         await m.answer("Не доставлено (пользователь заблокировал бота?)")
+
+
+@dp.message(ADM, F.text, F.entities.func(lambda es: any(e.type == "custom_emoji" for e in es)))
+async def emoji_ids(m: Message):
+    """Админ шлёт премиум-эмодзи, бот отвечает их ID для словаря EMOJI."""
+    out = [f"{e.extract_from(m.text)} — {e.custom_emoji_id}" for e in m.entities if e.type == "custom_emoji"]
+    await m.answer("ID премиум-эмодзи:\n\n" + "\n".join(out))
 
 
 @dp.message(ADM, F.photo)
