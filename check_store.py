@@ -19,4 +19,7 @@ s.add_user(7); s.add_user(7)
 assert s.all_users() == [7]
 s.set_photo("g", "f1"); s.set_photo("g", "f2")
 assert s.get_photo("g") == "f2" and s.get_photo("x") is None
+assert s.add_review(o1, 5) and not s.add_review(o1, 1)  # один отзыв на заказ
+s.set_review_text(o1, "ок")
+assert s.db.execute("select rating, text from reviews where order_id=?", (o1,)).fetchone() == (5, "ок")
 print("store OK")

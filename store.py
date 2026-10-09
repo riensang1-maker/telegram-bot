@@ -15,6 +15,7 @@ create table if not exists photos (product text primary key, file_id text);
 create table if not exists prices (product text, currency text, amount real,
     primary key(product, currency));
 create table if not exists hidden_products (product text primary key);
+create table if not exists reviews (order_id integer primary key, rating integer, text text);
 """)
 
 # Миграция старой базы без потери заказов.
@@ -79,6 +80,16 @@ def take_item(pid, oid):
     db.commit()
     row = db.execute("select data from items where order_id=?", (oid,)).fetchone()
     return row[0] if row else None
+
+def add_review(oid, rating):
+    """True = оценка сохранена; повторная оценка того же заказа игнорируется."""
+    cur = db.execute("insert or ignore into reviews (order_id, rating) values (?,?)", (oid, rating))
+    db.commit()
+    return cur.rowcount == 1
+
+def set_review_text(oid, text):
+    db.execute("update reviews set text=? where order_id=?", (text, oid))
+    db.commit()
 
 def add_user(uid):
     db.execute("insert or ignore into users (id) values (?)", (uid,))

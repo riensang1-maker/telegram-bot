@@ -1,0 +1,6 @@
+BOT_TOKEN=токен от BotFather
+ADMIN_ID=твой числовой Telegram ID (узнать у бота @userinfobot)
+CARD_INFO=Сбербанк 0000 0000 0000 0000, Иван И.
+CRYPTO_PAY_TOKEN=токен из @CryptoBot -> Crypto Pay (можно пусто, тогда кнопки CryptoBot не будет)
+VIP_LINK=ссылка-приглашение в VIP-группу (можно не задавать, в коде уже стоит текущая)
+VIP_CHAT_ID=ID VIP-группы вида -100... (бот там админ с правом приглашать; в коде уже стоит текущая)

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from datetime import timedelta
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -16,12 +17,15 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
 
 from store import (add_items, add_user, all_users, get_order, get_photo, move,
                    new_order, set_photo, stock, take_item, user_orders,
-                   get_price, set_price, is_hidden, hide_product, unhide_product, list_stock_items, delete_stock_item)
+                   get_price, set_price, is_hidden, hide_product, unhide_product, list_stock_items, delete_stock_item,
+                   add_review, set_review_text)
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 CARD_INFO_RUB = os.environ.get("CARD_INFO_RUB", os.environ.get("CARD_INFO", "Реквизиты для RUB не заданы"))
 CARD_INFO_KZT = os.environ.get("CARD_INFO_KZT", "Реквизиты для KZT не заданы")
+VIP_LINK = os.environ.get("VIP_LINK", "https://t.me/+gHjMO9nsundmNWYy")  # запасная общая ссылка
+VIP_CHAT = int(os.environ.get("VIP_CHAT_ID", "-1004331506239"))  # бот должен быть админом с правом приглашать
 CRYPTO_TOKEN = os.environ.get("CRYPTO_PAY_TOKEN")  # пусто = кнопки CryptoBot нет
 # тест-режим CryptoBot: https://testnet-pay.crypt.bot/api
 CRYPTO_API = os.environ.get("CRYPTO_API_URL", "https://pay.crypt.bot/api")
@@ -45,6 +49,7 @@ last = {}  # id пользователя -> сообщения бота, кот�
 class St(StatesGroup):
     proof = State()
     support = State()
+    review = State()
 
 
 class Adm(StatesGroup):
@@ -71,6 +76,16 @@ def ebtn(key, fallback, text, cb):
 
 def kb(*rows):
     return InlineKeyboardMarkup(inline_keyboard=[list(r) for r in rows])
+
+
+async def vip_kb():
+    """Кнопка с личной одноразовой ссылкой на 24 часа; если создать не вышло, с общей."""
+    url = VIP_LINK
+    try:
+        url = (await bot.create_chat_invite_link(VIP_CHAT, member_limit=1, expire_date=timedelta(hours=24))).invite_link
+    except Exception:
+        logging.exception("одноразовая ссылка не создалась, отправляю общую")
+    return kb([Btn(text="👑 Вступить в VIP-группу", url=url, style="success")])
 
 
 # Группы: несколько товаров (срок День/Неделя/Месяц) показываются в каталоге одной кнопкой.
@@ -153,9 +168,9 @@ async def rm(m: Message):
         pass
 
 
-async def tell(uid, text, code=False):
+async def tell(uid, text, code=False, markup=None):
     try:
-        await bot.send_message(uid, text, parse_mode="HTML" if code else None)
+        await bot.send_message(uid, text, parse_mode="HTML" if code else None, reply_markup=markup)
         return True
     except Exception:
         logging.exception("не доставлено пользователю %s", uid)
@@ -166,8 +181,12 @@ async def deliver(o):
     """Выдаёт оплаченный заказ o: берёт товар со склада. True = сообщение дошло."""
     item = take_item(o[2], o[0])
     if item:
-        return await tell(o[1], f"✅ Заказ #{o[0]} оплачен!\n\n📦 Ваш товар:\n"
-                                f"<code>{html.escape(item)}</code>", code=True)
+        sent = await tell(o[1], f"✅ Заказ #{o[0]} оплачен!\n\n📦 Ваш товар:\n"
+                                f"<code>{html.escape(item)}</code>", code=True, markup=await vip_kb())
+        if sent:
+            await tell(o[1], "⭐ Оцените покупку:",
+                       markup=kb([Btn(text=f"{n}⭐", callback_data=f"rv:{o[0]}:{n}") for n in range(1, 6)]))
+        return sent
     await bot.send_message(ADMIN_ID, f"⚠️ Заказ #{o[0]} оплачен, а товара «{PRODUCTS.get(o[2], {}).get('name', o[2])}» "
                                      f"на складе нет! Свяжитесь с клиентом, ID: {o[1]}")
     return await tell(o[1], f"✅ Заказ #{o[0]} оплачен, но товар закончился. "
@@ -373,6 +392,40 @@ async def decide(c: CallbackQuery):
         mark += " (пользователю НЕ доставлено!)"
     await c.message.edit_caption(caption=f"{c.message.caption}\n\n{mark}")
     await c.answer()
+
+
+@dp.callback_query(F.data.regexp(r"^rv:\d+:[1-5]$"))
+async def review_rate(c: CallbackQuery, state: FSMContext):
+    _, oid, n = c.data.split(":")
+    o = get_order(int(oid))
+    if not o or o[1] != c.from_user.id or o[4] != "paid":
+        return await c.answer("Заказ не найден", show_alert=True)
+    if not add_review(o[0], int(n)):
+        return await c.answer("Отзыв уже оставлен", show_alert=True)
+    await state.set_state(St.review)
+    await state.update_data(oid=o[0])
+    await c.message.edit_text(f"Спасибо за оценку {n}⭐\nНапишите отзыв одним сообщением или нажмите «Пропустить».",
+                              reply_markup=kb([Btn(text="Пропустить", callback_data="rvskip")]))
+    await bot.send_message(ADMIN_ID, f"⭐ Заказ #{o[0]} ({PRODUCTS.get(o[2], {}).get('name', o[2])}): {n}/5\n"
+                                     f"ID: {c.from_user.id}\n{c.from_user.full_name}")
+    await c.answer()
+
+
+@dp.callback_query(F.data == "rvskip")
+async def review_skip(c: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await c.message.edit_text("Спасибо за оценку! 💜")
+    await c.answer()
+
+
+@dp.message(St.review, F.text)
+async def review_text(m: Message, state: FSMContext):
+    oid = (await state.get_data())["oid"]
+    await state.clear()
+    text = m.text[:1000]
+    set_review_text(oid, text)
+    await bot.send_message(ADMIN_ID, f"💬 Отзыв к заказу #{oid}\nID: {m.from_user.id}\n{m.from_user.full_name}\n\n{text}")
+    await m.answer("Спасибо за отзыв! 💜")
 
 
 @dp.callback_query(F.data.startswith("cr:"))
