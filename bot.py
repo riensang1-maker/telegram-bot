@@ -67,11 +67,11 @@ EMOJI = {
 }
 
 
-def ebtn(key, fallback, text, cb):
+def ebtn(key, fallback, text, cb, style=None):
     """Кнопка с премиум-эмодзи, если ID задан, иначе с обычным эмодзи."""
     if EMOJI.get(key):
-        return Btn(text=text, callback_data=cb, icon_custom_emoji_id=EMOJI[key])
-    return Btn(text=f"{fallback} {text}", callback_data=cb)
+        return Btn(text=text, callback_data=cb, icon_custom_emoji_id=EMOJI[key], style=style)
+    return Btn(text=f"{fallback} {text}", callback_data=cb, style=style)
 
 
 def kb(*rows):
@@ -216,9 +216,9 @@ async def catalog_screen(uid):
         if g in GROUPS:
             if g not in seen:
                 seen.add(g)
-                rows.append([ebtn(g, GROUPS[g]["emoji"], GROUPS[g]["name"], f"g:{g}")])
+                rows.append([ebtn(g, GROUPS[g]["emoji"], GROUPS[g]["name"], f"g:{g}", "primary")])
         else:
-            rows.append([ebtn(i, p.get("emoji", "📁"), p["name"], f"p:{i}")])
+            rows.append([ebtn(i, p.get("emoji", "📁"), p["name"], f"p:{i}", "primary")])
     await show(uid, "🛒 Каталог товаров\n\nВыберите товар:", kb(*rows))
 
 
@@ -288,7 +288,8 @@ async def group(c: CallbackQuery, state: FSMContext):
     lines += [sep] + [f"• {PRODUCTS[i].get('term', PRODUCTS[i]['name'])} — {price_line(i)}" for i in ids]
     lines += [sep, "", "👇 Выберите срок:"]
     rows = [[Btn(text=f"{'✅' if stock(i) else '❌'} {PRODUCTS[i].get('term', PRODUCTS[i]['name'])} — {price_line(i, usdt=False)}",
-                 callback_data=f"p:{i}" if stock(i) else f"oos:{i}")] for i in ids]
+                 callback_data=f"p:{i}" if stock(i) else f"oos:{i}",
+                 style="success" if stock(i) else "danger")] for i in ids]
     rows.append([ebtn("back", "↩️", "Назад", "back")])
     photo = next((get_photo(i) or PRODUCTS[i].get("photo") for i in ids if get_photo(i) or PRODUCTS[i].get("photo")), None)
     await show(c.from_user.id, "\n".join(lines), kb(*rows), photo)
@@ -322,11 +323,11 @@ async def product(c: CallbackQuery, state: FSMContext):
     else:
         lines += ["", "Выберите способ оплаты:"]
         if CRYPTO_TOKEN and usdt:
-            rows.append([ebtn("crypto", "₿", f"CryptoBot (АВТОВЫДАЧА) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT")])
+            rows.append([ebtn("crypto", "₿", f"CryptoBot (АВТОВЫДАЧА) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT", "success")])
         if rub:
-            rows.append([ebtn("rub", "🇷🇺", f"Оплата в рублях — {money(rub, 'RUB')}", f"card:{pid}:RUB")])
+            rows.append([ebtn("rub", "🇷🇺", f"Оплата в рублях — {money(rub, 'RUB')}", f"card:{pid}:RUB", "primary")])
         if kzt:
-            rows.append([ebtn("kzt", "🇰🇿", f"Оплата в тенге — {money(kzt, 'KZT')}", f"card:{pid}:KZT")])
+            rows.append([ebtn("kzt", "🇰🇿", f"Оплата в тенге — {money(kzt, 'KZT')}", f"card:{pid}:KZT", "primary")])
     rows.append([ebtn("back", "↩️", "Назад", f"g:{p['group']}" if p.get("group") in GROUPS else "back")])
     await show(c.from_user.id, "\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
     await c.answer()
@@ -363,8 +364,8 @@ async def proof(m: Message, state: FSMContext):
     await bot.send_photo(
         ADMIN_ID, m.photo[-1].file_id,
         caption=f"💳 Заказ #{oid}\n{p['name']} — {money(amt, cur)}\nID: {m.from_user.id}\n{m.from_user.full_name}",
-        reply_markup=kb([Btn(text="✅ Подтвердить", callback_data=f"ok:{oid}"),
-                         Btn(text="❌ Отклонить", callback_data=f"no:{oid}")]))
+        reply_markup=kb([Btn(text="✅ Подтвердить", callback_data=f"ok:{oid}", style="success"),
+                         Btn(text="❌ Отклонить", callback_data=f"no:{oid}", style="danger")]))
     await state.clear()
     await show(m.from_user.id, "✅ Скриншот отправлен, ждите подтверждения.")
 
@@ -448,7 +449,7 @@ async def pay_crypto(c: CallbackQuery):
     await show(c.from_user.id,
                f"🧾 Заказ #{oid}\n📁 {p['name']}\n💰 К оплате: {money(amt, 'USDT')}\n\n"
                f"🔗 Счёт: {url}\n\nПосле оплаты нажмите «Проверить».",
-               kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}")],
+               kb([Btn(text="🔄 Проверить оплату", callback_data=f"chk:{oid}", style="primary")],
                   [Btn(text="↩️ Назад", callback_data=f"p:{pid}")]))
     await c.answer()
 
@@ -477,12 +478,12 @@ async def check_crypto(c: CallbackQuery):
 # ---------- админ ----------
 
 def admin_kb():
-    return kb([Btn(text="📦 Остатки", callback_data="adm:stock")],
-              [Btn(text="➕ Пополнить", callback_data="adm:add")],
-              [Btn(text="💰 Изменить цены", callback_data="adm:price")],
-              [Btn(text="🗑 Удалить ключ/аккаунт", callback_data="adm:delitem")],
-              [Btn(text="🖼 Фото товара", callback_data="adm:ph")],
-              [Btn(text="📢 Рассылка", callback_data="adm:bc")])
+    return kb([Btn(text="📦 Остатки", callback_data="adm:stock", style="primary")],
+              [Btn(text="➕ Пополнить", callback_data="adm:add", style="success")],
+              [Btn(text="💰 Изменить цены", callback_data="adm:price", style="primary")],
+              [Btn(text="🗑 Удалить ключ/аккаунт", callback_data="adm:delitem", style="danger")],
+              [Btn(text="🖼 Фото товара", callback_data="adm:ph", style="primary")],
+              [Btn(text="📢 Рассылка", callback_data="adm:bc", style="primary")])
 
 
 ADM_BACK = [Btn(text="↩️ Назад", callback_data="adm:menu")]
@@ -523,9 +524,9 @@ async def adm_price_pick(c: CallbackQuery, state: FSMContext):
         return await c.answer("Товар не найден", show_alert=True)
     await state.update_data(pid=pid)
     await show(c.from_user.id, f"💰 {title(PRODUCTS[pid])}\nВыберите валюту:",
-               kb([Btn(text="RUB ₽", callback_data="adm:pricecur:RUB"),
-                   Btn(text="KZT ₸", callback_data="adm:pricecur:KZT"),
-                    Btn(text="USDT", callback_data="adm:pricecur:USDT")], ADM_BACK))
+               kb([Btn(text="RUB ₽", callback_data="adm:pricecur:RUB", style="primary"),
+                   Btn(text="KZT ₸", callback_data="adm:pricecur:KZT", style="primary"),
+                    Btn(text="USDT", callback_data="adm:pricecur:USDT", style="primary")], ADM_BACK))
     await c.answer()
 
 
@@ -608,7 +609,7 @@ async def adm_delconfirm(c: CallbackQuery):
     _, _, pid, item_id = c.data.split(":")
     item_id = int(item_id)
     await show(c.from_user.id, f"⚠️ Удалить запись #{item_id} из товара «{PRODUCTS[pid]['name']}»?\nЭто действие нельзя отменить.",
-               kb([Btn(text="🗑 Да, удалить", callback_data=f"adm:deldo:{pid}:{item_id}")],
+               kb([Btn(text="🗑 Да, удалить", callback_data=f"adm:deldo:{pid}:{item_id}", style="danger")],
                   [Btn(text="❌ Отмена", callback_data=f"adm:delpick:{pid}")]))
     await c.answer()
 
@@ -659,7 +660,7 @@ async def adm_bc(c: CallbackQuery, state: FSMContext):
 async def adm_bc_preview(m: Message, state: FSMContext):
     await state.update_data(mid=m.message_id)
     await show(m.from_user.id, f"📢 Разослать это сообщение? Получателей: {len(all_users())}",
-               kb([Btn(text="✅ Отправить", callback_data="bc:yes"),
+               kb([Btn(text="✅ Отправить", callback_data="bc:yes", style="success"),
                    Btn(text="❌ Отмена", callback_data="adm:menu")]))
 
 
