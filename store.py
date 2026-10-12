@@ -1,6 +1,7 @@
 """База заказов, товаров и пользователей."""
 import os
 import sqlite3
+import time
 
 db = sqlite3.connect(os.environ.get("DB_PATH", "shop.db"), check_same_thread=False)
 db.executescript("""
@@ -24,6 +25,8 @@ if "currency" not in cols:
     db.execute("alter table orders add column currency text not null default 'RUB'")
 if "amount" not in cols:
     db.execute("alter table orders add column amount real")
+if "paid_at" not in cols:  # время оплаты нужно для счётчика «продано сегодня»; у старых заказов его нет
+    db.execute("alter table orders add column paid_at integer")
 db.commit()
 
 def get_price(pid, currency, default=None):
@@ -56,9 +59,15 @@ def get_order(oid):
                       "from orders where id=?", (oid,)).fetchone()
 
 def move(oid, old, new):
-    cur = db.execute("update orders set status=? where id=? and status=?", (new, oid, old))
+    cur = db.execute("update orders set status=?, paid_at=case when ?='paid' then cast(strftime('%s','now') as integer) "
+                     "else paid_at end where id=? and status=?", (new, new, oid, old))
     db.commit()
     return cur.rowcount == 1
+
+def sold_today(tz=5):
+    """Сколько заказов оплачено с начала сегодняшнего дня по времени UTC+tz."""
+    start = int((time.time() + tz * 3600) // 86400 * 86400 - tz * 3600)
+    return db.execute("select count(*) from orders where status='paid' and paid_at>=?", (start,)).fetchone()[0]
 
 def user_orders(uid, limit=5):
     return db.execute("select id, product, status from orders where user_id=? "

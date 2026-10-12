@@ -18,7 +18,7 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
 from store import (add_items, add_user, all_users, get_order, get_photo, move,
                    new_order, set_photo, stock, take_item, user_orders,
                    get_price, set_price, is_hidden, hide_product, unhide_product, list_stock_items, delete_stock_item,
-                   add_review, set_review_text)
+                   add_review, set_review_text, sold_today)
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
@@ -26,6 +26,8 @@ CARD_INFO_RUB = os.environ.get("CARD_INFO_RUB", os.environ.get("CARD_INFO", "Р�
 CARD_INFO_KZT = os.environ.get("CARD_INFO_KZT", "Реквизиты для KZT не заданы")
 VIP_LINK = os.environ.get("VIP_LINK", "https://t.me/+gHjMO9nsundmNWYy")  # запасная общая ссылка
 VIP_CHAT = int(os.environ.get("VIP_CHAT_ID", "-1004331506239"))  # бот должен быть админом с правом приглашать
+PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-bota-MirlyNyashka-Mirly-Shop-Bot-10-12"
+TERMS_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-bota-MirlyNyashka-Mirly-Shop-Bot-10-12"
 CRYPTO_TOKEN = os.environ.get("CRYPTO_PAY_TOKEN")  # пусто = кнопки CryptoBot нет
 # тест-режим CryptoBot: https://testnet-pay.crypt.bot/api
 CRYPTO_API = os.environ.get("CRYPTO_API_URL", "https://pay.crypt.bot/api")
@@ -219,7 +221,7 @@ async def catalog_screen(uid):
                 rows.append([ebtn(g, GROUPS[g]["emoji"], GROUPS[g]["name"], f"g:{g}", "primary")])
         else:
             rows.append([ebtn(i, p.get("emoji", "📁"), p["name"], f"p:{i}", "primary")])
-    await show(uid, "🛒 Каталог товаров\n\nВыберите товар:", kb(*rows))
+    await show(uid, f"🛒 Каталог товаров\n🔥 Продано сегодня: {sold_today()}\n\nВыберите товар:", kb(*rows))
 
 
 @dp.message(CommandStart())
@@ -244,14 +246,34 @@ async def back(c: CallbackQuery, state: FSMContext):
     await c.answer()
 
 
+async def cabinet_screen(u):
+    text = f"👤 Мой кабинет\n\n🙍 Имя: {u.full_name}\n🆔 ID: {u.id}"
+    if u.username:
+        text += f"\n🔗 Юзернейм: @{u.username}"
+    await show(u.id, text, kb([Btn(text="📦 Мои покупки", callback_data="my", style="primary")],
+                              [Btn(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)],
+                              [Btn(text="📋 Пользовательское соглашение", url=TERMS_URL)]))
+
+
 @dp.message(F.text == CABINET)
 async def cabinet(m: Message, state: FSMContext):
     await state.clear()
     await rm(m)
+    await cabinet_screen(m.from_user)
+
+
+@dp.callback_query(F.data == "cab")
+async def cabinet_back(c: CallbackQuery):
+    await cabinet_screen(c.from_user)
+    await c.answer()
+
+
+@dp.callback_query(F.data == "my")
+async def my_orders(c: CallbackQuery):
     hist = "\n".join(f"#{i} {PRODUCTS.get(p, {}).get('name', p)} — {STATUS.get(s, s)}"
-                     for i, p, s in user_orders(m.from_user.id)) or "пока пусто"
-    await show(m.from_user.id, f"👤 Мой кабинет\n\n🙍 Имя: {m.from_user.full_name}\n"
-                               f"🆔 ID: {m.from_user.id}\n\n🧾 Последние заказы:\n{hist}")
+                     for i, p, s in user_orders(c.from_user.id, 10)) or "пока пусто"
+    await show(c.from_user.id, f"📦 Мои покупки\n\n{hist}", kb([ebtn("back", "↩️", "Назад", "cab")]))
+    await c.answer()
 
 
 @dp.message(F.text == SUPPORT)
@@ -321,9 +343,9 @@ async def product(c: CallbackQuery, state: FSMContext):
     elif not rub and not kzt and not usdt:
         lines += ["", "⏳ Покупка пока недоступна"]
     else:
-        lines += ["", "Выберите способ оплаты:"]
+        lines += ["", "👇 Выберите способ оплаты:"]
         if CRYPTO_TOKEN and usdt:
-            rows.append([ebtn("crypto", "₿", f"CryptoBot (АВТОВЫДАЧА) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT", "success")])
+            rows.append([ebtn("crypto", "₿", f"CryptoBot (автовыдача) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT", "success")])
         if rub:
             rows.append([ebtn("rub", "🇷🇺", f"Оплата в рублях — {money(rub, 'RUB')}", f"card:{pid}:RUB", "primary")])
         if kzt:
