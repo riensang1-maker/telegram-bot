@@ -17,6 +17,7 @@ create table if not exists prices (product text, currency text, amount real,
     primary key(product, currency));
 create table if not exists hidden_products (product text primary key);
 create table if not exists reviews (order_id integer primary key, rating integer, text text);
+create table if not exists ref_bonus (order_id integer primary key, ref_id integer, amount integer);
 """)
 
 # Миграция старой базы без потери заказов.
@@ -25,6 +26,11 @@ if "currency" not in cols:
     db.execute("alter table orders add column currency text not null default 'RUB'")
 if "amount" not in cols:
     db.execute("alter table orders add column amount real")
+ucols = {r[1] for r in db.execute("pragma table_info(users)")}
+if "ref_by" not in ucols:
+    db.execute("alter table users add column ref_by integer")
+if "balance" not in ucols:
+    db.execute("alter table users add column balance real not null default 0")
 if "paid_at" not in cols:  # время оплаты нужно для счётчика «продано сегодня»; у старых заказов его нет
     db.execute("alter table orders add column paid_at integer")
 db.commit()
@@ -100,9 +106,40 @@ def set_review_text(oid, text):
     db.execute("update reviews set text=? where order_id=?", (text, oid))
     db.commit()
 
-def add_user(uid):
-    db.execute("insert or ignore into users (id) values (?)", (uid,))
+def add_user(uid, ref=None):
+    """Пригласивший запоминается один раз, при первом запуске; себя пригласить нельзя."""
+    if ref == uid or not db.execute("select 1 from users where id=?", (ref,)).fetchone():
+        ref = None
+    db.execute("insert or ignore into users (id, ref_by) values (?,?)", (uid, ref))
     db.commit()
+
+def balance(uid):
+    row = db.execute("select balance from users where id=?", (uid,)).fetchone()
+    return row[0] if row else 0
+
+def pay_balance(uid, amount):
+    """Списывает amount с баланса целиком; False, если денег не хватает."""
+    cur = db.execute("update users set balance=balance-? where id=? and balance>=?", (amount, uid, amount))
+    db.commit()
+    return cur.rowcount == 1
+
+def credit_ref(oid, bonus):
+    """Бонус пригласившему за оплаченный заказ, один раз на заказ. Возвращает его ID или None."""
+    row = db.execute("select u.ref_by from orders o join users u on u.id=o.user_id "
+                     "where o.id=? and o.status='paid'", (oid,)).fetchone()
+    if not row or not row[0] or bonus <= 0:
+        return None
+    cur = db.execute("insert or ignore into ref_bonus (order_id, ref_id, amount) values (?,?,?)", (oid, row[0], bonus))
+    if cur.rowcount == 1:
+        db.execute("update users set balance=balance+? where id=?", (bonus, row[0]))
+    db.commit()
+    return row[0] if cur.rowcount == 1 else None
+
+def ref_stats(uid):
+    """(приглашено, покупок друзей, заработано)"""
+    invited = db.execute("select count(*) from users where ref_by=?", (uid,)).fetchone()[0]
+    buys, earned = db.execute("select count(*), coalesce(sum(amount),0) from ref_bonus where ref_id=?", (uid,)).fetchone()
+    return invited, buys, earned
 
 def all_users():
     return [r[0] for r in db.execute("select id from users")]

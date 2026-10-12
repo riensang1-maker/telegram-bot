@@ -7,7 +7,8 @@
     "price": 250,
     "photo": null,
     "group": "aqreh",
-    "term": "День"
+    "term": "День",
+    "ref_bonus": 10
   },
   {
     "id": "aqreh7",
@@ -17,7 +18,8 @@
     "price": 950,
     "photo": null,
     "group": "aqreh",
-    "term": "Неделя"
+    "term": "Неделя",
+    "ref_bonus": 10
   },
   {
     "id": "aqreh30",
@@ -27,7 +29,8 @@
     "price": 2000,
     "photo": null,
     "group": "aqreh",
-    "term": "Месяц"
+    "term": "Месяц",
+    "ref_bonus": 10
   },
   {
     "id": "google",
@@ -35,7 +38,8 @@
     "name": "Google Account",
     "description": "Это не оригинальные аккаунты, а специальные, на другом домене.",
     "price": 40,
-    "photo": null
+    "photo": null,
+    "ref_bonus": 2
   },
   {
     "id": "testarossa",

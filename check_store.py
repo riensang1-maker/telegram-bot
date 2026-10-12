@@ -23,4 +23,12 @@ assert s.add_review(o1, 5) and not s.add_review(o1, 1)  # один отзыв н
 s.set_review_text(o1, "ок")
 assert s.db.execute("select rating, text from reviews where order_id=?", (o1,)).fetchone() == (5, "ок")
 assert s.sold_today() == 1  # оплачен только o1
+s.add_user(10); s.add_user(11, 10); s.add_user(11, 7); s.add_user(12, 12)
+assert s.ref_stats(10) == (1, 0, 0)  # 11 привязан к 10; повторная привязка не работает
+assert s.db.execute("select ref_by from users where id=12").fetchone() == (None,)  # самореферал игнорируется
+o5 = s.new_order(11, "g", "card", "review"); s.move(o5, "review", "paid")
+assert s.credit_ref(o5, 10) == 10 and s.credit_ref(o5, 10) is None  # бонус один раз на заказ
+assert s.credit_ref(o1, 10) is None  # у o1 пригласившего нет
+assert s.balance(10) == 10 and s.ref_stats(10) == (1, 1, 10)
+assert not s.pay_balance(10, 15) and s.pay_balance(10, 10) and s.balance(10) == 0
 print("store OK")

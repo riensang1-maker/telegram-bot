@@ -8,7 +8,7 @@ from datetime import timedelta
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
@@ -18,7 +18,8 @@ from aiogram.types import (CallbackQuery, InlineKeyboardButton as Btn,
 from store import (add_items, add_user, all_users, get_order, get_photo, move,
                    new_order, set_photo, stock, take_item, user_orders,
                    get_price, set_price, is_hidden, hide_product, unhide_product, list_stock_items, delete_stock_item,
-                   add_review, set_review_text, sold_today)
+                   add_review, set_review_text, sold_today,
+                   balance, pay_balance, credit_ref, ref_stats)
 
 TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
@@ -183,6 +184,10 @@ async def deliver(o):
     """Выдаёт оплаченный заказ o: берёт товар со склада. True = сообщение дошло."""
     item = take_item(o[2], o[0])
     if item:
+        bonus = PRODUCTS.get(o[2], {}).get("ref_bonus", 0)
+        ref = credit_ref(o[0], bonus) if o[3] != "balance" else None  # с баланса бонус не даём
+        if ref:
+            await tell(ref, f"🎉 Ваш друг совершил покупку! +{money(bonus, 'RUB')} на баланс.")
         sent = await tell(o[1], f"✅ Заказ #{o[0]} оплачен!\n\n📦 Ваш товар:\n"
                                 f"<code>{html.escape(item)}</code>", code=True,
                           markup=await vip_kb() if PRODUCTS.get(o[2], {}).get("group") == "aqreh" else None)  # VIP только для AQREH
@@ -225,9 +230,10 @@ async def catalog_screen(uid):
 
 
 @dp.message(CommandStart())
-async def start(m: Message, state: FSMContext):
+async def start(m: Message, state: FSMContext, command: CommandObject):
     await state.clear()
-    add_user(m.from_user.id)
+    arg = command.args or ""
+    add_user(m.from_user.id, int(arg[4:]) if arg.startswith("ref_") and arg[4:].isdigit() else None)
     await rm(m)
     await show(m.from_user.id, "👋 Добро пожаловать!\n\nВыберите раздел кнопками внизу ⬇", MENU)
 
@@ -250,7 +256,9 @@ async def cabinet_screen(u):
     text = f"👤 Мой кабинет\n\n🙍 Имя: {u.full_name}\n🆔 ID: {u.id}"
     if u.username:
         text += f"\n🔗 Юзернейм: @{u.username}"
+    text += f"\n💰 Баланс: {money(balance(u.id), 'RUB')}"
     await show(u.id, text, kb([Btn(text="📦 Мои покупки", callback_data="my", style="primary")],
+                              [Btn(text="👥 Рефералы", callback_data="ref", style="primary")],
                               [Btn(text="🔒 Политика конфиденциальности", url=PRIVACY_URL)],
                               [Btn(text="📋 Пользовательское соглашение", url=TERMS_URL)]))
 
@@ -265,6 +273,27 @@ async def cabinet(m: Message, state: FSMContext):
 @dp.callback_query(F.data == "cab")
 async def cabinet_back(c: CallbackQuery):
     await cabinet_screen(c.from_user)
+    await c.answer()
+
+
+def bonus_lines():
+    got = {}
+    for p in PRODUCTS.values():
+        if p.get("ref_bonus", 0) > 0:
+            got[GROUPS[p["group"]]["name"] if p.get("group") in GROUPS else p["name"]] = p["ref_bonus"]
+    return "\n".join(f"• {n} — {money(b, 'RUB')}" for n, b in got.items())
+
+
+@dp.callback_query(F.data == "ref")
+async def referrals(c: CallbackQuery):
+    uid = c.from_user.id
+    invited, buys, earned = ref_stats(uid)
+    link = f"https://t.me/{(await bot.me()).username}?start=ref_{uid}"
+    await show(uid, "👥 Рефералы\n\nПриглашайте друзей: за каждую их покупку вы получаете бонус на баланс, "
+                    "им можно оплачивать покупки в боте.\n\n"
+                    f"{bonus_lines()}\n\n🔗 Ваша ссылка:\n{link}\n\n"
+                    f"👤 Приглашено: {invited}\n🛒 Покупок друзей: {buys}\n💰 Заработано: {money(earned, 'RUB')}",
+               kb([ebtn("back", "↩️", "Назад", "cab")]))
     await c.answer()
 
 
@@ -344,6 +373,8 @@ async def product(c: CallbackQuery, state: FSMContext):
         lines += ["", "⏳ Покупка пока недоступна"]
     else:
         lines += ["", "👇 Выберите способ оплаты:"]
+        if rub and balance(c.from_user.id) >= rub:
+            rows.append([ebtn("balance", "💰", f"Оплата с баланса — {money(rub, 'RUB')}", f"bal:{pid}", "success")])
         if CRYPTO_TOKEN and usdt:
             rows.append([ebtn("crypto", "₿", f"CryptoBot (автовыдача) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT", "success")])
         if rub:
@@ -353,6 +384,21 @@ async def product(c: CallbackQuery, state: FSMContext):
     rows.append([ebtn("back", "↩️", "Назад", f"g:{p['group']}" if p.get("group") in GROUPS else "back")])
     await show(c.from_user.id, "\n".join(lines), kb(*rows), get_photo(pid) or p.get("photo"))
     await c.answer()
+
+
+@dp.callback_query(F.data.startswith("bal:"))
+async def pay_with_balance(c: CallbackQuery):
+    pid = c.data[4:]
+    rub = price(pid, "RUB")
+    if not sellable(pid) or is_hidden(pid) or not stock(pid):
+        return await c.answer("Сейчас недоступно", show_alert=True)
+    if not pay_balance(c.from_user.id, rub):
+        return await c.answer("Недостаточно средств на балансе", show_alert=True)
+    oid = new_order(c.from_user.id, pid, "balance", "balance_wait", currency="RUB", amount=rub)
+    move(oid, "balance_wait", "paid")
+    await c.answer()
+    await clean(c.from_user.id)
+    await deliver(get_order(oid))
 
 
 @dp.callback_query(F.data.startswith("card:"))
