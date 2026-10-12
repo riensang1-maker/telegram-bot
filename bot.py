@@ -373,7 +373,7 @@ async def product(c: CallbackQuery, state: FSMContext):
         lines += ["", "⏳ Покупка пока недоступна"]
     else:
         lines += ["", "👇 Выберите способ оплаты:"]
-        if rub and balance(c.from_user.id) >= rub:
+        if rub:
             rows.append([ebtn("balance", "💰", f"Оплата с баланса — {money(rub, 'RUB')}", f"bal:{pid}", "success")])
         if CRYPTO_TOKEN and usdt:
             rows.append([ebtn("crypto", "₿", f"CryptoBot (автовыдача) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT", "success")])
