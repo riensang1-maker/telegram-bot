@@ -374,7 +374,8 @@ async def product(c: CallbackQuery, state: FSMContext):
     else:
         lines += ["", "👇 Выберите способ оплаты:"]
         if rub:
-            rows.append([ebtn("balance", "💰", f"Оплата с баланса — {money(rub, 'RUB')}", f"bal:{pid}", "success")])
+            rows.append([ebtn("balance", "💰", f"Оплата с баланса — {money(rub, 'RUB')}", f"bal:{pid}",
+                              "success" if balance(c.from_user.id) >= rub else None)])
         if CRYPTO_TOKEN and usdt:
             rows.append([ebtn("crypto", "₿", f"CryptoBot (автовыдача) — {money(usdt, 'USDT')}", f"cr:{pid}:USDT", "success")])
         if rub:
@@ -393,7 +394,7 @@ async def pay_with_balance(c: CallbackQuery):
     if not sellable(pid) or is_hidden(pid) or not stock(pid):
         return await c.answer("Сейчас недоступно", show_alert=True)
     if not pay_balance(c.from_user.id, rub):
-        return await c.answer("Недостаточно средств на балансе", show_alert=True)
+        return await c.answer(f"Недостаточно средств. На балансе: {money(balance(c.from_user.id), 'RUB')}", show_alert=True)
     oid = new_order(c.from_user.id, pid, "balance", "balance_wait", currency="RUB", amount=rub)
     move(oid, "balance_wait", "paid")
     await c.answer()

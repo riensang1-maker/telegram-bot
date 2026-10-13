@@ -40,13 +40,5 @@
     "price": 40,
     "photo": null,
     "ref_bonus": 2
-  },
-  {
-    "id": "testarossa",
-    "emoji": "🏎",
-    "name": "Testarossa",
-    "description": "Описание добавим позже.",
-    "price": null,
-    "photo": null
   }
 ]
